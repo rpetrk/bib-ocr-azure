@@ -1,0 +1,19 @@
+# Byte-compiled / virtual environment
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.env
+
+# Logs / outputs
+*.log
+*.json
+
+# VSCode settings (optional)
+.vscode/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+r4PXN6/
