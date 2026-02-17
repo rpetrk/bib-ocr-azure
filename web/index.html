@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>RaceBibIndexer - Albums</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+      .row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+      input { padding: 8px; width: 240px; }
+      button { padding: 8px 12px; cursor: pointer; }
+      .album { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 10px 0; }
+      .meta { color: #555; font-size: 0.9em; }
+      .error { color: #b00020; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>RaceBibIndexer - Album Browser</h1>
+
+    <div class="row">
+      <label for="user">SmugMug username:</label>
+      <input id="user" value="mcrrcphotos" />
+      <button id="go">Load albums</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="out"></div>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const outEl = document.getElementById("out");
+      const userEl = document.getElementById("user");
+      const btn = document.getElementById("go");
+
+      async function loadAlbums() {
+        const username = userEl.value.trim();
+        if (!username) return;
+
+        statusEl.textContent = "Loading...";
+        outEl.innerHTML = "";
+
+        try {
+          const res = await fetch(`http://localhost:8000/albums/${encodeURIComponent(username)}`);
+          const json = await res.json();
+
+          if (!res.ok) {
+            statusEl.innerHTML = `<div class="error">${JSON.stringify(json, null, 2)}</div>`;
+            return;
+          }
+
+          statusEl.textContent = `Found ${json.count} albums for ${json.username}`;
+          for (const a of json.albums) {
+            const div = document.createElement("div");
+            div.className = "album";
+            div.innerHTML = `
+              <div><strong>${a.title ?? "Untitled"}</strong></div>
+              <div class="meta">Images: ${a.imageCount ?? "?"} • Created: ${a.dateCreated ?? "?"} • Updated: ${a.lastUpdated ?? "?"}</div>
+              <div class="meta">Uri: ${a.uri ?? ""}</div>
+            `;
+            outEl.appendChild(div);
+          }
+        } catch (e) {
+          statusEl.innerHTML = `<div class="error">${String(e)}</div>`;
+        }
+      }
+
+      btn.addEventListener("click", loadAlbums);
+      loadAlbums();
+    </script>
+  </body>
+</html>

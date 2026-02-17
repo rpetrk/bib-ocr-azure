@@ -2,10 +2,10 @@ import requests
 from requests_oauthlib import OAuth1
 
 # SmugMug API credentials
-api_key = 'qCJ9693fSX42hmh4RRb7FQccP7mcsMcx'
-api_secret = 'pBd6nNGDVG7ZF4B34wQxPhg4qjSbHkHwmh7FcpTgPv8GH2SBtsZqWvhmcPKHC3V2'
-access_token = 'DBRJhtMkwLr6Gr2PTzTNKM3LJjf2JLg7'
-access_token_secret = 'hgJg5Q6htVZ8BDsfNPqrpsQ3MPNjZXqCqjV5s6GnGgjNx9DCQRQVz8jS3jLckQFV'
+api_key = 'zPgGc7tRXxZHs7PgmkSKcTfcwzpRfD23'
+api_secret = 'kTstmwxFJ7Ms6nkBvF5cDPv4RcGJZw6q8JJnP3NMd665Tbwf7gH4Vztb6W8GqBWz'
+access_token = 'J9BX5DFCjrcGvJLXbcTgX74nxHfDWLcT'
+access_token_secret = 'FWPFmGxkKMS4n8kQsPXPCCZp8dtvcCbnrhLJbrNFGfh84ZFXm3tqMTd4tgKNJrj2'
 
 # OAuth authentication setup
 auth = OAuth1(api_key, api_secret, access_token, access_token_secret)
@@ -28,6 +28,11 @@ while has_more:
 
     # Make a GET request to the API to fetch albums
     response = requests.get(paginated_url, auth=auth, headers=headers)
+
+    print("STATUS:", response.status_code)
+    print("CONTENT-TYPE:", response.headers.get("Content-Type"))
+    print("FIRST 500 CHARS:", response.text[:500])
+
 
     if 'json' in response.headers.get('Content-Type', ''):
         try:
