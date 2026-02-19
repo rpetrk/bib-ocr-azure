@@ -4,10 +4,12 @@ load_dotenv()
 import os
 from typing import Any, Dict, List, Optional
 
+import logging
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from requests_oauthlib import OAuth1
+log = logging.getLogger("smugmug")
 
 SMUGMUG_BASE = "https://api.smugmug.com/api/v2"
 
@@ -54,15 +56,38 @@ def list_albums(username: str, count: int = 50) -> Dict[str, Any]:
 
     url = f"{SMUGMUG_BASE}/user/{username}!albums?start=1&count={count}"
 
-    resp = requests.get(url, auth=auth, headers=headers, timeout=30)
+    resp = requests.get(url, auth=auth, headers=headers, timeout=30, verify=False)
 
     if resp.status_code != 200:
-        # SmugMug often returns JSON error bodies; pass them through for debugging
+        content_type = resp.headers.get("content-type", "")
         try:
-            detail = resp.json()
+            body = resp.json() if "json" in content_type else resp.text
         except Exception:
-            detail = {"status_code": resp.status_code, "body": resp.text[:1000]}
-        raise HTTPException(status_code=resp.status_code, detail=detail)
+            body = resp.text
+
+        # Log useful upstream info (helps detect proxy/WAF/rate-limit)
+        log.warning(
+            "SmugMug non-200: status=%s url=%s server=%s via=%s retry_after=%s body=%s",
+            resp.status_code,
+            url,
+            resp.headers.get("server"),
+            resp.headers.get("via"),
+            resp.headers.get("retry-after"),
+            str(body)[:2000],
+        )
+
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail={
+                "upstream": "api.smugmug.com",
+                "status_code": resp.status_code,
+                "url": url,
+                "retry_after": resp.headers.get("retry-after"),
+                "server": resp.headers.get("server"),
+                "via": resp.headers.get("via"),
+                "body": body if isinstance(body, (dict, list)) else str(body)[:2000],
+            },
+        )
 
     data = resp.json()
     albums = data.get("Response", {}).get("Album", [])
