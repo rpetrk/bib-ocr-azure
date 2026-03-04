@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+from fastapi.params import Query
 load_dotenv()
 
 import os
@@ -9,6 +10,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from requests_oauthlib import OAuth1
+from urllib.parse import urlparse
 
 log = logging.getLogger("smugmug")
 
@@ -216,3 +218,87 @@ def list_albums(username: str, count: int = 50) -> Dict[str, Any]:
         })
 
     return {"username": username, "count": len(simplified), "albums": simplified}
+
+@app.get("/smugmug/resolve-nickname")
+def smugmug_resolve_nickname(url: str = Query(..., description="Public SmugMug URL (custom domain or *.smugmug.com)")) -> Dict[str, Any]:
+    """
+    Attempt to resolve a SmugMug user's NickName from a public URL by using UrlPathLookup.
+
+    Notes:
+    - Works only if the URL points to content that SmugMug can resolve (album/folder/page)
+      and if the content is not private (or you have OAuth permissions).
+    - This uses OAuth, because UrlPathLookup is under a user context in the API.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    host = parsed.netloc
+    path = parsed.path or "/"
+
+    auth = get_oauth()
+    headers = {"Accept": "application/json"}
+
+    # We need a user's UrlPathLookup endpoint to call; easiest is to use YOUR authenticated user
+    # (SMUGMUG_USERNAME) and call its !urlpathlookup endpoint.
+    username = os.environ.get("SMUGMUG_USERNAME")
+    if not username:
+        raise HTTPException(status_code=500, detail="Missing env var: SMUGMUG_USERNAME")
+
+    lookup_url = f"{SMUGMUG_BASE}/user/{username}!urlpathlookup"
+
+    # Common parameter pattern used by SmugMug is to provide the host + path being looked up.
+    # If this 400s, we’ll inspect the returned body and adjust parameter names.
+    resp = requests.get(
+        lookup_url,
+        auth=auth,
+        headers=headers,
+        params={"Host": host, "Path": path},
+        timeout=30,
+        allow_redirects=False,
+    )
+
+    if resp.status_code != 200:
+        raise_upstream(resp, resp.url)
+
+    data = resp.json()
+
+    # The response may contain one of Folder/Album/Page objects.
+    r = data.get("Response", {})
+
+    # Try to find a User object directly
+    user = r.get("User")
+    if isinstance(user, dict) and user.get("NickName"):
+        return {"input": {"url": url, "host": host, "path": path}, "nickname": user.get("NickName"), "raw": data}
+
+    # Otherwise, try Album/Folder/Page -> Uris -> User
+    for obj_key in ("Album", "Folder", "Page", "Node"):
+        obj = r.get(obj_key)
+        if isinstance(obj, dict):
+            # Sometimes the object includes Owner/OwnerUri/User directly
+            owner = obj.get("Owner") or obj.get("User")
+            if isinstance(owner, dict) and owner.get("NickName"):
+                return {"input": {"url": url, "host": host, "path": path}, "nickname": owner.get("NickName"), "raw": data}
+
+            # If there's a user URI link, follow it
+            uris = obj.get("Uris") or {}
+            for ukey in ("User", "Owner", "OwnerUser"):
+                uinfo = uris.get(ukey)
+                if isinstance(uinfo, dict) and isinstance(uinfo.get("Uri"), str):
+                    user_uri = uinfo["Uri"]
+                    user_url = f"https://api.smugmug.com{user_uri}" if user_uri.startswith("/") else user_uri
+                    uresp = requests.get(user_url, auth=auth, headers=headers, timeout=30, allow_redirects=False)
+                    if uresp.status_code != 200:
+                        raise_upstream(uresp, user_url)
+                    uj = uresp.json()
+                    uobj = uj.get("Response", {}).get("User", {})
+                    if uobj.get("NickName"):
+                        return {"input": {"url": url, "host": host, "path": path}, "nickname": uobj.get("NickName"), "raw": data}
+
+    # If we couldn't resolve, return what we got for debugging
+    return {
+        "input": {"url": url, "host": host, "path": path},
+        "nickname": None,
+        "message": "Could not resolve NickName from this URL (may be private or not resolvable by UrlPathLookup).",
+        "raw": data,
+    }
