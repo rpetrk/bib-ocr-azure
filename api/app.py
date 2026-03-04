@@ -219,86 +219,54 @@ def list_albums(username: str, count: int = 50) -> Dict[str, Any]:
 
     return {"username": username, "count": len(simplified), "albums": simplified}
 
-@app.get("/smugmug/resolve-nickname")
-def smugmug_resolve_nickname(url: str = Query(..., description="Public SmugMug URL (custom domain or *.smugmug.com)")) -> Dict[str, Any]:
-    """
-    Attempt to resolve a SmugMug user's NickName from a public URL by using UrlPathLookup.
+from urllib.parse import urlparse
 
-    Notes:
-    - Works only if the URL points to content that SmugMug can resolve (album/folder/page)
-      and if the content is not private (or you have OAuth permissions).
-    - This uses OAuth, because UrlPathLookup is under a user context in the API.
-    """
+@app.get("/smugmug/resolve-nickname")
+def smugmug_resolve_nickname(
+    url: str = Query(..., description="Public SmugMug URL (custom domain or *.smugmug.com)"),
+) -> Dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Invalid URL")
 
-    host = parsed.netloc
-    path = parsed.path or "/"
+    # If it's already *.smugmug.com, the nickname is the subdomain.
+    if parsed.netloc.endswith(".smugmug.com"):
+        nickname = parsed.netloc.split(".")[0]
+        return {"input": {"url": url}, "nickname": nickname, "source": "parsed-subdomain"}
 
-    auth = get_oauth()
-    headers = {"Accept": "application/json"}
-
-    # We need a user's UrlPathLookup endpoint to call; easiest is to use YOUR authenticated user
-    # (SMUGMUG_USERNAME) and call its !urlpathlookup endpoint.
+    # Otherwise use UrlPathLookup under your authenticated user context.
     username = os.environ.get("SMUGMUG_USERNAME")
     if not username:
         raise HTTPException(status_code=500, detail="Missing env var: SMUGMUG_USERNAME")
 
-    lookup_url = f"{SMUGMUG_BASE}/user/{username}!urlpathlookup"
+    auth = get_oauth()
+    headers = {"Accept": "application/json"}
 
-    # Common parameter pattern used by SmugMug is to provide the host + path being looked up.
-    # If this 400s, we’ll inspect the returned body and adjust parameter names.
+    lookup_url = f"{SMUGMUG_BASE}/user/{username}!urlpathlookup"
     resp = requests.get(
         lookup_url,
         auth=auth,
         headers=headers,
-        params={"Host": host, "Path": path},
+        params={"urlpath": url},   # <-- matches SmugMug Options.Parameters
         timeout=30,
         allow_redirects=False,
     )
-
     if resp.status_code != 200:
         raise_upstream(resp, resp.url)
 
     data = resp.json()
-
-    # The response may contain one of Folder/Album/Page objects.
     r = data.get("Response", {})
 
-    # Try to find a User object directly
-    user = r.get("User")
-    if isinstance(user, dict) and user.get("NickName"):
-        return {"input": {"url": url, "host": host, "path": path}, "nickname": user.get("NickName"), "raw": data}
-
-    # Otherwise, try Album/Folder/Page -> Uris -> User
-    for obj_key in ("Album", "Folder", "Page", "Node"):
+    # Try Folder/Album/Page -> Uris -> User -> Uri
+    for obj_key in ("Folder", "Album", "Page", "Node"):
         obj = r.get(obj_key)
         if isinstance(obj, dict):
-            # Sometimes the object includes Owner/OwnerUri/User directly
-            owner = obj.get("Owner") or obj.get("User")
-            if isinstance(owner, dict) and owner.get("NickName"):
-                return {"input": {"url": url, "host": host, "path": path}, "nickname": owner.get("NickName"), "raw": data}
-
-            # If there's a user URI link, follow it
             uris = obj.get("Uris") or {}
-            for ukey in ("User", "Owner", "OwnerUser"):
-                uinfo = uris.get(ukey)
-                if isinstance(uinfo, dict) and isinstance(uinfo.get("Uri"), str):
-                    user_uri = uinfo["Uri"]
-                    user_url = f"https://api.smugmug.com{user_uri}" if user_uri.startswith("/") else user_uri
-                    uresp = requests.get(user_url, auth=auth, headers=headers, timeout=30, allow_redirects=False)
-                    if uresp.status_code != 200:
-                        raise_upstream(uresp, user_url)
-                    uj = uresp.json()
-                    uobj = uj.get("Response", {}).get("User", {})
-                    if uobj.get("NickName"):
-                        return {"input": {"url": url, "host": host, "path": path}, "nickname": uobj.get("NickName"), "raw": data}
+            u = uris.get("User")
+            if isinstance(u, dict) and isinstance(u.get("Uri"), str):
+                # "/api/v2/user/romankastin" -> "romankastin"
+                user_uri = u["Uri"].rstrip("/")
+                nickname = user_uri.split("/")[-1]
+                return {"input": {"url": url}, "nickname": nickname, "source": "urlpathlookup", "raw": data}
 
-    # If we couldn't resolve, return what we got for debugging
-    return {
-        "input": {"url": url, "host": host, "path": path},
-        "nickname": None,
-        "message": "Could not resolve NickName from this URL (may be private or not resolvable by UrlPathLookup).",
-        "raw": data,
-    }
+    return {"input": {"url": url}, "nickname": None, "source": "urlpathlookup", "raw": data}
