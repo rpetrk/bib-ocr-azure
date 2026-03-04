@@ -82,6 +82,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/smugmug/user/apidemo")
+def smugmug_user_apidemo() -> Dict[str, Any]:
+    """
+    Proxies the SmugMug API demo endpoint using the API key from env:
+
+      GET https://api.smugmug.com/api/v2/user/apidemo?APIKey=<SMUGMUG_API_KEY>
+
+    Notes:
+    - This is the SmugMug "apidemo" user endpoint; it does not use OAuth.
+    - Env var required: SMUGMUG_API_KEY
+    """
+    api_key = os.environ.get("SMUGMUG_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Missing env var: SMUGMUG_API_KEY")
+
+    upstream_url = f"{SMUGMUG_BASE}/user/apidemo"
+    resp = requests.get(
+        upstream_url,
+        headers={"Accept": "application/json"},
+        params={"APIKey": api_key},
+        timeout=30,
+        allow_redirects=False,
+    )
+
+    if resp.status_code != 200:
+        raise_upstream(resp, resp.url)
+
+    return resp.json()
+
 @app.get("/smugmug/root")
 def smugmug_root() -> Dict[str, Any]:
     """
