@@ -147,25 +147,46 @@ def health():
     return {"ok": True}
 
 @app.get("/me")
-def whoami() -> Dict[str, Any]:
+def me() -> Dict[str, Any]:
     """
-    Returns info about the authenticated SmugMug user for the OAuth token.
+    Returns the SmugMug user record for the configured account.
+
+    Requires:
+      - SMUGMUG_USERNAME (your SmugMug nickname)
+      - OAuth env vars used by get_oauth()
+
+    This avoids relying on the SmugMug API root for discovery.
     """
-    resp = smugmug_get("/authuser")
+    username = os.environ.get("SMUGMUG_USERNAME")
+    if not username:
+        raise HTTPException(status_code=500, detail="Missing env var: SMUGMUG_USERNAME")
+
+    auth = get_oauth()
+    headers = {"Accept": "application/json"}
+
+    url = f"{SMUGMUG_BASE}/user/{username}"
+    resp = requests.get(
+        url,
+        auth=auth,
+        headers=headers,
+        timeout=30,
+        allow_redirects=False,
+    )
+
     if resp.status_code != 200:
-        raise_upstream(resp, resp.url)
+        raise_upstream(resp, url)
 
     data = resp.json()
     user = data.get("Response", {}).get("User", {})
 
-    # Return both raw + convenient fields
     return {
-        "raw": user,
+        "username": username,
         "nickname": user.get("NickName"),
         "name": user.get("Name"),
         "uri": user.get("Uri"),
         "webUri": user.get("WebUri"),
-        "userKey": user.get("UserKey"),
+        "uris": user.get("Uris"),
+        "raw": user,
     }
 
 @app.get("/albums/{username}")
