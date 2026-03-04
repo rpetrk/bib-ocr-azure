@@ -221,6 +221,8 @@ def list_albums(username: str, count: int = 50) -> Dict[str, Any]:
 
 from urllib.parse import urlparse
 
+from urllib.parse import urlparse
+
 @app.get("/smugmug/resolve-nickname")
 def smugmug_resolve_nickname(
     url: str = Query(..., description="Public SmugMug URL (custom domain or *.smugmug.com)"),
@@ -229,12 +231,11 @@ def smugmug_resolve_nickname(
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Invalid URL")
 
-    # If it's already *.smugmug.com, the nickname is the subdomain.
+    # Fast-path for *.smugmug.com
     if parsed.netloc.endswith(".smugmug.com"):
         nickname = parsed.netloc.split(".")[0]
         return {"input": {"url": url}, "nickname": nickname, "source": "parsed-subdomain"}
 
-    # Otherwise use UrlPathLookup under your authenticated user context.
     username = os.environ.get("SMUGMUG_USERNAME")
     if not username:
         raise HTTPException(status_code=500, detail="Missing env var: SMUGMUG_USERNAME")
@@ -243,11 +244,20 @@ def smugmug_resolve_nickname(
     headers = {"Accept": "application/json"}
 
     lookup_url = f"{SMUGMUG_BASE}/user/{username}!urlpathlookup"
+
+    # Ask SmugMug to include the resolved object (Folder/Album/Page) in the response.
+    # These param names are API-dependent; `_expand` is a common SmugMug pattern.
+    params = {
+        "urlpath": url,
+        "_expand": "Folder,Album,Page",
+        "ResponseLevel": "Full",
+    }
+
     resp = requests.get(
         lookup_url,
         auth=auth,
         headers=headers,
-        params={"urlpath": url},   # <-- matches SmugMug Options.Parameters
+        params=params,
         timeout=30,
         allow_redirects=False,
     )
@@ -257,16 +267,44 @@ def smugmug_resolve_nickname(
     data = resp.json()
     r = data.get("Response", {})
 
-    # Try Folder/Album/Page -> Uris -> User -> Uri
-    for obj_key in ("Folder", "Album", "Page", "Node"):
+    # Try to resolve via embedded object -> Uris.User.Uri
+    for obj_key in ("Folder", "Album", "Page"):
         obj = r.get(obj_key)
         if isinstance(obj, dict):
             uris = obj.get("Uris") or {}
             u = uris.get("User")
             if isinstance(u, dict) and isinstance(u.get("Uri"), str):
-                # "/api/v2/user/romankastin" -> "romankastin"
                 user_uri = u["Uri"].rstrip("/")
                 nickname = user_uri.split("/")[-1]
-                return {"input": {"url": url}, "nickname": nickname, "source": "urlpathlookup", "raw": data}
+                return {"input": {"url": url}, "nickname": nickname, "source": f"urlpathlookup:{obj_key}", "raw": data}
 
+            # Fallback: sometimes the object itself might carry user-ish fields
+            for k in ("NickName", "UserKey", "OwnerNickName"):
+                if isinstance(obj.get(k), str) and obj.get(k):
+                    return {"input": {"url": url}, "nickname": obj.get(k), "source": f"urlpathlookup:{obj_key}:field:{k}", "raw": data}
+
+    # If not expanded, SmugMug will often still tell you what it resolved via Locator/LocatorType,
+    # but won't include the object. In that case, you must do a second request to the returned Uri.
+    uri = r.get("Uri")
+    if isinstance(uri, str) and uri.startswith("/api/"):
+        follow_url = f"https://api.smugmug.com{uri}"
+        follow = requests.get(follow_url, auth=auth, headers=headers, timeout=30, allow_redirects=False)
+        if follow.status_code != 200:
+            raise_upstream(follow, follow_url)
+        follow_data = follow.json()
+
+        rr = follow_data.get("Response", {})
+        for obj_key in ("Folder", "Album", "Page"):
+            obj = rr.get(obj_key)
+            if isinstance(obj, dict):
+                uris = obj.get("Uris") or {}
+                u = uris.get("User")
+                if isinstance(u, dict) and isinstance(u.get("Uri"), str):
+                    user_uri = u["Uri"].rstrip("/")
+                    nickname = user_uri.split("/")[-1]
+                    return {"input": {"url": url}, "nickname": nickname, "source": f"urlpathlookup-follow:{obj_key}", "raw": follow_data}
+
+        return {"input": {"url": url}, "nickname": None, "source": "urlpathlookup-follow", "raw": follow_data}
+
+    # Nothing resolved
     return {"input": {"url": url}, "nickname": None, "source": "urlpathlookup", "raw": data}
