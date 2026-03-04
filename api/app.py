@@ -70,6 +70,8 @@ def raise_upstream(resp: requests.Response, url: str) -> None:
         },
     )
 
+
+
 app = FastAPI(title="RaceBibIndexer API")
 
 app.add_middleware(
@@ -79,6 +81,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/smugmug/root")
+def smugmug_root() -> Dict[str, Any]:
+    """
+    Returns SmugMug API v2 root response (authenticated).
+    Useful to discover the correct 'who am I' / auth-user link for this token.
+    """
+    auth = get_oauth()
+    headers = {"Accept": "application/json"}
+
+    resp = requests.get(f"{SMUGMUG_BASE}/", auth=auth, headers=headers, timeout=30)
+
+    if resp.status_code != 200:
+        content_type = resp.headers.get("content-type", "")
+        try:
+            body = resp.json() if "json" in content_type else resp.text
+        except Exception:
+            body = resp.text
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail={
+                "upstream": "api.smugmug.com",
+                "status_code": resp.status_code,
+                "url": resp.url,
+                "body": body,
+                "server": resp.headers.get("server"),
+                "via": resp.headers.get("via"),
+            },
+        )
+
+    return resp.json()
 
 @app.get("/health")
 def health():
